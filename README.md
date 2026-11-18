@@ -1,6 +1,6 @@
 # TL-CGKA
 
-This repository contains the C and Python implementations of TL-CGKA presented in our paper, together with the [security models and complete proofs](proofs/Security%20Models%20and%20Proofs.pdf). Both implementations support group key updates, core member joins and leaves, and ordinary member joins and leaves.
+This repository contains the C and Python implementations of TL-CGKA presented in our paper, together with the [security models and complete proofs](proofs/CGKA_SP_27_proof.pdf). Both implementations support group key updates, core member joins and leaves, and ordinary member joins and leaves.
 
 ## Deployment
 
