@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tl-cgka-reference"
+version = "0.1.0"
+description = "A Python reference implementation of two-level continuous group key agreement"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=42"]
+
+[tool.setuptools]
+packages = ["tlcgka"]

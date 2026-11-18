@@ -1,0 +1,138 @@
+TL-CGKA C API
+========
+
+include/tlcgka.h declares:
+  int tlcgka_call(input, length, &output, &output_length);
+  void tlcgka_free(output, output_length);
+  const char *tlcgka_version(void);
+
+Return 0 = success, 1 = rejected request/protocol error, -1 = API/allocation/setup failure.
+Success output is canonical binary; return 1 output is UTF-8 diagnostic text.
+Always release returned buffers with tlcgka_free, including errors.
+Only these three symbols are exported, avoiding collisions with host applications.
+
+Input = pack((operation_string, arguments_tuple)).
+Canonical pack: n=None; t/f=bool; i+uint64BE; b/s+uint32BE byte length+bytes;
+l+uint32BE element count+recursive values. Strings must be valid UTF-8.
+Maximum wire = 64 MiB, nesting = 32, per-call arena allocation = 256 MiB.
+All input/state is copied. No caller-owned state changes on a rejected request.
+Concurrent calls use separate thread-local arenas. Callers must serialize updates
+to the SAME client/session and install exactly the successful successor state.
+This serialized-state API deliberately leaves storage and transport to the caller.
+Never replay/restore an old successful nonce state or share it between signers.
+
+Notation
+--------
+map = sorted tuple of (key,value); scalar = canonical 32-byte LE integer < group order.
+null = canonical n; bytes = b; tuple/list = l. The internal C V representation is
+private and is not an ABI. All named state fields below are tuple positions in order.
+
+GUA state (9): gid,member,epoch,sk,m,roster,pk,signature,key.
+GUA aggregate (4): ciphertext,tau,entries,weights (scalar values encoded as bytes).
+GUA candidate (5): parent_digest,tentative_state,confirmers,R,tau.
+Nonce (5): context,member,secret-or-null,R,salt.
+UB sender (3): public-node-map,member-to-leaf-map,epoch.
+UB receiver (3): leaf,private-path-tuple,epoch.
+Source (2): UB receiver,verification_key.
+Core (15): gid,subgroup,member,local_GUA,global_GUA,UB_sender,sources_map,
+           epoch,key,pending,contributors,confirmers,nonce,strict_I_equals_F,history.
+Ordinary uses the same 15-slot transport schema, with null for local/global/tree/
+pending/nonce; positions 10/11 are empty tuples and position 13 is true.
+Pending (12): ql,local_next,theta,source,ek_next,dk_next,u_global,global_candidate,
+              J,weights,qgs,share. Missing optional values are null.
+Group (5): gid,subgroups,cores_map,ordinary_map,nonce_session.
+Endpoint (6): key,sid,owner,peer,tx,rx.
+Client (4): member,endpoint,nonce_pool_map,context.
+Server (8): endpoints_map,members,context,commitments_map,registry_map,opened,
+            frozen,last_epoch. Initial last_epoch is null (Python uses -1).
+Session (7): gid,version,window,batch,server,clients_map,context.
+Membership (5): group,private_channel_keypairs_map,pending_map,queues_map,version.
+Membership candidate (6): parent=(global,local,tree),wire,target_path,global_next,
+                          local_next,tree_next.
+Trace records: (kind,source,wire_bytes,recipient_tuple).
+Round result: (subgroup_to_final_message_map,trace_records,preprocessing_trace_or_null).
+
+Operations (all arguments are positional)
+----------------------------------------
+codec.pack(value), codec.unpack(bytes)
+crypto.scalar(), scalar_read(bytes), base(scalar), mul(scalar,point), add(a,b), sub(a,b),
+  point(bytes,nonzero_bool), total(points), digest(label,parts), hscalar(label,parts),
+  hgroup(label,parts), kdf(label,parts), sign(sk,message), verify(pk,message,signature),
+  seal(key,plaintext,ad), open_seal(key,ciphertext,ad), nike_gen(), nike_public(sk), nike(sk,pk).
+
+gua.init(gid,members) -> map of GUA states
+gua.keyagg(gid,roster) -> (pk,weights_map)
+gua.enc(state,rho) -> (u,ciphertext)
+gua.combine(state,bundles_map) -> aggregate
+gua.dec(state,ciphertext) -> rho
+gua.ratchet(state,u_or_null,rho,aggregate,confirmers,R,nonce_or_null,ctx,strict_bool)
+  -> ((candidate,share_or_null),updated_nonce_or_null)
+gua.confirm(state,candidate,shares) -> committed GUA state
+
+nonce.prepare(ctx,member), nonce.commitment(nonce), nonce.opening(nonce)
+nonce.consume(nonce), nonce.burn(nonce) -> (updated_nonce,result)
+nonce.aggregate(ctx,confirmers,commitments,openings) -> R
+refresh.change(state,op,target,target_pk,ctx,outer_authenticated_bool,coins_or_null)
+  -> (wire,new_state). op = 'A' or 'R'. coins=null uses native CSPRNG.
+  Optional coins=(e,eta,r,authentication_r) exists solely for deterministic test vectors.
+refresh.recover(old_anchor,member,sk,wire,ctx,outer_authenticated_bool) -> new_state
+  outer_authenticated=true is INTERNAL use after successful applicable ChangeCore
+  signature verification. Network callers must not set it to bypass authentication.
+
+ub.gen(members_or_count), enc(sender), fin(intermediate,ad), dec(receiver,ad,ct),
+  add(sender,member), rmv(sender,member), proc(receiver,wire), fork(sender), proc_fork(receiver,wire)
+  -> same tuple shapes as Python reference, with sender maps serialized as above.
+
+core.configure(core,contributors,confirmers), prepare(core), takeover(core,ql),
+  share(core,ql,qgs,R), commit(core,shares,send_bool), abort(core), nonce_prepare(core)
+  -> (updated_core,result). core.nonce_open(core) -> opening wire.
+ordinary.receive(ordinary,wire) -> (updated_ordinary,key).
+group.init(gid,subgroups,strict_bool,nonce_window),
+  group.balanced(N,G,q,gid,strict_bool) -> Group.
+group.round(group,rotate_bool,handoff_bool,deliver_bool,verify_bool)
+  -> (updated_group,round_result).
+group.preprocess(group) -> (updated_group,preprocessing_trace_or_null).
+
+endpoint.send(endpoint,value), endpoint.receive(endpoint,wire)
+client.prepare(client,context), open(client), accept(client,wire,binding,selected), clear(client)
+server.begin(server,context,members), commit(server,member,wire), freeze(server),
+  open(server,member,wire), update(server,requester,wire)
+  -> (updated_object,result).
+session.new(gid,members,window) -> Session.
+session.register(session,member), reconfigure(session,members), preprocess(session,base,roster_hash),
+  aggregate(session,binding) -> (updated_session,result).
+  aggregate result = (member_to_(R,nonce)_map,trace); reconfigure/preprocess return trace.
+session.ready(session,epoch) -> bool.
+
+membership.new(group) -> Membership.
+membership.change_core(state,sponsor,op,target,global_pk,local_pk) -> (state,(wire,path_or_null)).
+membership.process(state,member,wire,old_global_anchor,old_local_anchor,new_secrets_or_null)
+  -> (global_next_or_null,local_next_or_null,path_or_null).
+membership.change(state,sponsor,op,target), membership.drain(state)
+  -> (updated_membership,trace).
+  membership.change authenticates the updated local roster.
+  Wire = (body,global_signature,local_signature), where body has five entries:
+  (header,global_GUA_change,local_GUA_change,tree_update,new_local_roster).
+  Both signatures cover the entire body. Local cores compare the roster against
+  their GUA recovery, then existing local source verification keys are synchronized.
+  Drain queued source-tree membership operations before membership.update.
+  The low-level change_core/process APIs still return staged results; the full
+  membership.change orchestration installs client states after all checks succeed.
+membership.change_ordinary(state,sponsor,op,target) -> (updated_membership,trace).
+  The sponsor is a core in the affected subgroup.
+  Add/remove only ordinary recipients. Core/GUA membership, signing keys and nonce
+  pool remain unchanged. Drain source queues before update; the next agreement
+  advances the global epoch/history and produces a new group key. Joins receive
+  new paths over authenticated private channels. Rejoining uses a fresh channel.
+  Removal of a source tree's final receiver is rejected.
+membership.process_ordinary(state,member,wire) -> staged_receiver_path_or_null.
+  Read-only receiver-side authentication/context checks; does not install state.
+  Wire=(body,global_signature,local_signature); body=(header,tree_update).
+  Header=("ordinary",gid,membership_version,epoch,history,subgroup,sponsor,op,target).
+membership.update(state,verify_bool) -> (updated_membership,round_result).
+channels.deliver(channel_map,source,recipient,value,context) -> (value,trace).
+
+src/main.c is a caller of the public ABI. tests/protocol_tests.c exercises the
+native C implementation and the public API.
+demo.* operations are convenience CLI scenarios; protocol consumers should use the
+explicit group/core/ordinary/membership APIs above.
